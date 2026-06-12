@@ -1,0 +1,1704 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>魔法陣工房 — Arcanum Circle Generator</title>
+<meta name="description" content="属性・階位・シードから魔法陣を決定的に生成。詠唱アニメーション・効果音・3D重奏・SVG書き出し対応。">
+<!-- OGP: YOUR-USERNAME を自分のGitHubユーザー名に置き換えてください -->
+<meta property="og:title" content="魔法陣工房 — Arcanum Circle Generator">
+<meta property="og:description" content="属性・階位・シードから魔法陣を決定的に生成。詠唱アニメーション・効果音・3D重奏対応。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://YOUR-USERNAME.github.io/magic-circle/">
+<meta property="og:image" content="https://YOUR-USERNAME.github.io/magic-circle/ogp.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Shippori+Mincho:wght@500;700&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --hue: 15;
+    --accent: hsl(var(--hue) 85% 62%);
+    --accent-dim: hsl(var(--hue) 60% 45%);
+    --ink: #0b0a12;
+    --panel: #14121d;
+    --line: #2a2638;
+    --parchment: #d9d2bf;
+    --parchment-dim: #8d8778;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { overflow-x: hidden; }
+  body {
+    background: var(--ink);
+    color: var(--parchment);
+    font-family: "Shippori Mincho", serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+    overscroll-behavior-x: none;   /* 3D層のはみ出しによる横スクロールを抑止 */
+  }
+  /* 属性色の環境光 */
+  .ambient {
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background: radial-gradient(ellipse 70% 55% at 50% 38%,
+      hsl(var(--hue) 70% 50% / 0.13), transparent 70%);
+    transition: background 1.2s ease;
+  }
+  .wrap {
+    position: relative; z-index: 1;
+    max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px;
+  }
+  header { text-align: center; margin-bottom: 24px; }
+  .eyebrow {
+    font-family: "Cinzel", serif; font-size: 11px; letter-spacing: 0.5em;
+    color: var(--accent); text-transform: uppercase;
+    transition: color 0.8s;
+  }
+  h1 {
+    font-size: clamp(26px, 4.5vw, 40px); font-weight: 700;
+    letter-spacing: 0.18em; margin-top: 6px;
+  }
+  h1 .rule { color: var(--parchment-dim); font-weight: 500; }
+
+  .stage {
+    display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+    gap: 28px; align-items: start;
+  }
+  @media (max-width: 820px) { .stage { grid-template-columns: 1fr; } }
+
+  .circle-frame {
+    position: sticky; top: 16px;
+    aspect-ratio: 1; width: 100%;
+    cursor: grab;
+    touch-action: pan-y;   /* 縦スワイプはページスクロールに渡す（スマホで固まって見える問題の対策） */
+    user-select: none; -webkit-user-select: none;
+  }
+  .circle-frame:active { cursor: grabbing; }
+  /* 操作モード: 縦スワイプもページに渡さず、陣の操作に専念する */
+  .circle-frame.manip { touch-action: none; }
+  .frame-mode-btn {
+    position: absolute; top: 8px; right: 8px; z-index: 3;
+    background: rgba(11, 10, 18, 0.72);
+    color: var(--parchment-dim);
+    border: 1px solid var(--line);
+    padding: 7px 12px; cursor: pointer;
+    font-family: "Shippori Mincho", serif; font-size: 12px;
+    transition: color 0.25s, border-color 0.25s;
+  }
+  .frame-mode-btn.on { color: var(--accent); border-color: var(--accent); }
+  .frame-mode-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* モバイルではstickyを解除するが、絶対配置の3Dシーンの基準は維持する必要があるため
+     static ではなく relative にする（staticだとシーンがページ全体基準になり画面外へ飛ぶ） */
+  @media (max-width: 820px) { .circle-frame { position: relative; } }
+
+  /* ===== 3D シーン =====
+     preserve-3d のネストはWebKitで描画消失・フリーズの原因になるため使わない。
+     各層に同一のビュー行列（perspective→回転→translateZ）を個別に適用する。
+     全層が同一中心を共有するため、結果は親perspective方式と数学的に等価 */
+  .scene3d { position: absolute; inset: 0; }
+  .orbit { position: absolute; inset: 0; }
+  .layer3d {
+    position: absolute; left: 50%; top: 50%;
+    aspect-ratio: 1;
+    pointer-events: none;
+    will-change: transform;
+  }
+  /* 回転はSVGの外側（このラッパー）の2D回転。層の3D変換と平面内で合成される */
+  .spinwrap {
+    position: absolute; inset: 0;
+    transform-origin: 50% 50%;
+  }
+  .layer3d svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .frame-hint {
+    position: absolute; bottom: 6px; left: 0; right: 0;
+    text-align: center; font-size: 11px; color: var(--parchment-dim);
+    pointer-events: none; opacity: 0.8;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    padding: 22px;
+  }
+  .panel + .panel { margin-top: 18px; }
+  .panel h2 {
+    font-family: "Cinzel", serif; font-size: 12px; letter-spacing: 0.35em;
+    color: var(--parchment-dim); text-transform: uppercase;
+    border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 16px;
+  }
+
+  /* モード切替タブ */
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 18px; }
+  .tab {
+    font-family: "Shippori Mincho", serif; font-size: 13px;
+    background: transparent; color: var(--parchment-dim);
+    border: 1px solid var(--line); padding: 10px; cursor: pointer;
+    transition: color 0.25s, border-color 0.25s, background 0.25s;
+  }
+  .tab + .tab { border-left: none; }
+  .tab.active {
+    color: var(--accent); border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .tab + .tab.active { border-left: 1px solid var(--accent); }
+  .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .elements { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .el-btn {
+    font-family: "Shippori Mincho", serif;
+    background: transparent; color: var(--parchment);
+    border: 1px solid var(--line);
+    padding: 12px 4px; cursor: pointer; font-size: 15px;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    transition: border-color 0.25s, background 0.25s;
+  }
+  .el-btn .glyph { font-size: 18px; line-height: 1; color: var(--btn-c); }
+  .el-btn:hover { border-color: var(--btn-c); }
+  .el-btn.active {
+    border-color: var(--btn-c);
+    background: color-mix(in srgb, var(--btn-c) 12%, transparent);
+  }
+  .el-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .field { margin-top: 18px; }
+  .field label, .field .lbl {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 13px; color: var(--parchment-dim); margin-bottom: 8px;
+  }
+  .field label output, .field .lbl output {
+    color: var(--accent); font-family: "IBM Plex Mono", monospace; font-size: 13px;
+  }
+  input[type="range"] {
+    width: 100%; -webkit-appearance: none; appearance: none; height: 2px;
+    background: var(--line); cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 16px; height: 16px;
+    border-radius: 50%; background: var(--accent); border: 2px solid var(--ink);
+    box-shadow: 0 0 8px var(--accent);
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent); border: 2px solid var(--ink);
+  }
+  /* 色相スライダーだけは虹のトラック */
+  input[type="range"].hue-track {
+    height: 8px;
+    background: linear-gradient(to right,
+      hsl(0 80% 55%), hsl(60 80% 55%), hsl(120 80% 55%),
+      hsl(180 80% 55%), hsl(240 80% 55%), hsl(300 80% 55%), hsl(360 80% 55%));
+  }
+  .seed-row { display: flex; gap: 8px; }
+  .seed-row input {
+    flex: 1; min-width: 0; background: var(--ink); color: var(--parchment);
+    border: 1px solid var(--line); padding: 9px 10px;
+    font-family: "IBM Plex Mono", monospace; font-size: 13px;
+  }
+  select {
+    width: 100%; background: var(--ink); color: var(--parchment);
+    border: 1px solid var(--line); padding: 9px 10px;
+    font-family: "Shippori Mincho", serif; font-size: 13px; cursor: pointer;
+  }
+  .btn {
+    background: transparent; color: var(--parchment);
+    border: 1px solid var(--line); padding: 9px 14px; cursor: pointer;
+    font-family: "Shippori Mincho", serif; font-size: 13px;
+    transition: border-color 0.25s, color 0.25s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn.wide { width: 100%; margin-top: 20px; }
+
+  /* 自作モード用 2列グリッド */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+  .grid2 .field.full { grid-column: 1 / -1; }
+
+  /* 方向トグル */
+  .seg { display: grid; grid-template-columns: 1fr 1fr; }
+  .seg button {
+    font-family: "Shippori Mincho", serif; font-size: 13px;
+    background: transparent; color: var(--parchment-dim);
+    border: 1px solid var(--line); padding: 8px; cursor: pointer;
+  }
+  .seg button + button { border-left: none; }
+  .seg button.active { color: var(--accent); border-color: var(--accent); }
+  .seg button + button.active { border-left: 1px solid var(--accent); }
+
+  .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--parchment-dim); cursor: pointer; }
+  .check input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+
+  .hidden { display: none !important; }
+
+  /* 詠唱注解（導出パラメータの根拠表示） */
+  .legend dl {
+    display: grid; grid-template-columns: auto 1fr; gap: 7px 14px;
+    font-size: 13px; line-height: 1.55;
+  }
+  .legend dt {
+    font-family: "Cinzel", serif; font-size: 10px; letter-spacing: 0.2em;
+    color: var(--accent); text-transform: uppercase; padding-top: 2px;
+    transition: color 0.8s;
+  }
+  .legend dd { color: var(--parchment); }
+  .legend dd small { display: block; color: var(--parchment-dim); font-size: 11px; }
+
+  .btn.primary { border-color: var(--accent); color: var(--accent); }
+  .btn.primary:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  /* 回転・詠唱アニメーションの定義は FX_CSS（script内）から注入。
+     書き出したSVG単体でも同じ詠唱シーケンスが再生されるよう、定義を一元化している */
+
+  /* ===== 詠唱タイムライン ===== */
+  .tl-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .tl-time {
+    margin-left: auto; font-family: "IBM Plex Mono", monospace;
+    font-size: 12px; color: var(--parchment-dim);
+  }
+  .tl-grid { position: relative; }
+  .tl-row {
+    display: grid; grid-template-columns: 132px 1fr 110px;
+    gap: 12px; align-items: center; padding: 4px 0;
+  }
+  @media (max-width: 600px) { .tl-row { grid-template-columns: 92px 1fr 86px; gap: 8px; } }
+  .tl-label { font-size: 12px; color: var(--parchment-dim); text-align: right; }
+  .tl-val {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px;
+    color: var(--parchment-dim); white-space: nowrap;
+  }
+  .tl-track {
+    position: relative; height: 20px;
+    background: var(--ink); border: 1px solid var(--line);
+  }
+  .tl-ruler { cursor: ew-resize; touch-action: none; }
+  .tl-tick {
+    position: absolute; top: 0; bottom: 0; width: 1px;
+    background: var(--line); pointer-events: none;
+  }
+  .tl-tick span {
+    position: absolute; top: 2px; left: 3px;
+    font-family: "IBM Plex Mono", monospace; font-size: 9px;
+    color: var(--parchment-dim);
+  }
+  .tl-bar {
+    position: absolute; top: 3px; bottom: 3px;
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+    border: 1px solid var(--accent);
+    cursor: grab; touch-action: none;
+  }
+  .tl-bar:active { cursor: grabbing; }
+  .tl-handle {
+    position: absolute; top: -1px; bottom: -1px; width: 9px;
+    cursor: ew-resize; touch-action: none;
+  }
+  .tl-handle.l { left: -5px; border-left: 3px solid var(--accent); }
+  .tl-handle.r { right: -5px; border-right: 3px solid var(--accent); }
+  .tl-point {
+    position: absolute; top: 3px; width: 13px; height: 13px;
+    transform: translateX(-50%) rotate(45deg);
+    background: var(--accent); cursor: grab; touch-action: none;
+  }
+  .tl-playhead {
+    position: absolute; top: 0; bottom: 0; width: 1px;
+    background: var(--parchment); opacity: 0.85;
+    box-shadow: 0 0 6px var(--accent);
+    pointer-events: none; z-index: 2;
+  }
+  .tl-hint { font-size: 11px; color: var(--parchment-dim); margin-top: 12px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Arcanum Circle Generator</div>
+    <h1>魔<span class="rule">・</span>法<span class="rule">・</span>陣<span class="rule">・</span>工<span class="rule">・</span>房</h1>
+  </header>
+
+  <div class="stage">
+    <div class="circle-frame" id="frame" aria-live="polite">
+      <button class="frame-mode-btn" id="manipBtn" aria-pressed="false" title="魔法陣操作モード: 縦スクロールを止めて自由に回転・拡縮">✥ 操作モード</button>
+      <div class="frame-hint">横ドラッグで回転 — 操作モードで自由回転・ピンチ拡縮</div>
+    </div>
+
+    <div>
+      <section class="panel">
+        <h2>術式構成</h2>
+
+        <div class="tabs" role="tablist">
+          <button class="tab active" id="tabPreset" role="tab" aria-selected="true">属性術式</button>
+          <button class="tab" id="tabCustom" role="tab" aria-selected="false">自作術式</button>
+        </div>
+
+        <!-- 属性モード -->
+        <div id="presetPane">
+          <div class="elements" id="elements" role="group" aria-label="属性"></div>
+        </div>
+
+        <!-- 自作モード -->
+        <div id="customPane" class="hidden">
+          <button class="btn" id="copyPreset" style="width:100%;" title="選択中の属性・階位のパラメータを複写して出発点にする">⤓ 現在の属性術式を複写して始める</button>
+
+          <div class="grid2">
+            <div class="field full">
+              <label for="cHue">色相<output id="cHueOut">200°</output></label>
+              <input type="range" class="hue-track" id="cHue" min="0" max="359" value="200" step="1">
+            </div>
+            <div class="field">
+              <label for="cSat">彩度<output id="cSatOut">80%</output></label>
+              <input type="range" id="cSat" min="20" max="100" value="80" step="5">
+            </div>
+            <div class="field">
+              <label for="cRings">環の重数<output id="cRingsOut">2</output></label>
+              <input type="range" id="cRings" min="1" max="4" value="2" step="1">
+            </div>
+            <div class="field">
+              <label for="cN">星型 頂点数 n<output id="cNOut">7</output></label>
+              <input type="range" id="cN" min="3" max="16" value="7" step="1">
+            </div>
+            <div class="field">
+              <label for="cK">星型 結節数 k<output id="cKOut">3</output></label>
+              <input type="range" id="cK" min="1" max="3" value="3" step="1">
+            </div>
+            <div class="field">
+              <span class="lbl">回転方向</span>
+              <div class="seg" role="group" aria-label="回転方向">
+                <button id="cDirCW" class="active">時計回り</button>
+                <button id="cDirCCW">反時計回り</button>
+              </div>
+            </div>
+            <div class="field">
+              <label for="cSpeed">回転速度<output id="cSpeedOut">1.0×</output></label>
+              <input type="range" id="cSpeed" min="0" max="3" value="1" step="0.05">
+            </div>
+            <div class="field">
+              <label for="cJitter">線の揺らぎ<output id="cJitterOut">0.010</output></label>
+              <input type="range" id="cJitter" min="0" max="0.05" value="0.01" step="0.002">
+            </div>
+            <div class="field" style="display:flex; align-items:flex-end; padding-bottom:6px;">
+              <label class="check" style="margin:0;"><input type="checkbox" id="cInvert">星型を逆位にする</label>
+            </div>
+            <div class="field">
+              <label for="cSigil">中央シジル</label>
+              <select id="cSigil">
+                <option value="triUp">△ 上向き三角（火）</option>
+                <option value="triDown">▽ 下向き三角（水）</option>
+                <option value="triUpBar">🜁 三角＋横線（風）</option>
+                <option value="triDownBar">🜃 逆三角＋横線（土）</option>
+                <option value="sun" selected>☉ 太陽（光）</option>
+                <option value="moonstar">☽ 逆五芒と月（闇）</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="cRunes">ルーン文字系</label>
+              <select id="cRunes">
+                <option value="fire">火の文字系</option>
+                <option value="water">水の文字系</option>
+                <option value="wind">風の文字系</option>
+                <option value="earth">土の文字系</option>
+                <option value="light" selected>光の文字系</option>
+                <option value="dark">闇の文字系</option>
+                <option value="all">混成（全系統）</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- 共通コントロール -->
+        <div class="field">
+          <label for="power">階位（魔力強度）<output id="powerOut">III</output></label>
+          <input type="range" id="power" min="1" max="10" value="5" step="1">
+        </div>
+
+        <div class="field">
+          <label for="seed">術式番号（シード）</label>
+          <div class="seed-row">
+            <input type="text" id="seed" value="1024" inputmode="numeric" aria-label="シード値">
+            <button class="btn" id="reroll" title="新しい術式番号で再生成">⟳ 再演算</button>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label for="layersN">重奏（陣の数）<output id="layersOut">2</output></label>
+            <input type="range" id="layersN" min="1" max="3" value="2" step="1">
+          </div>
+          <div class="field">
+            <label for="gapN">層間隔<output id="gapOut">70</output></label>
+            <input type="range" id="gapN" min="20" max="160" value="70" step="5">
+          </div>
+        </div>
+
+        <button class="btn wide primary" id="castBtn">✦ 詠唱を始める</button>
+        <button class="btn wide" id="download" style="margin-top:10px;">SVGとして書き出す</button>
+        <button class="btn wide" id="shareBtn" style="margin-top:10px;">🔗 共有リンクをコピー</button>
+      </section>
+
+      <section class="panel legend">
+        <h2 id="legendTitle">詠唱注解 — 導出根拠</h2>
+        <dl id="legend"></dl>
+      </section>
+    </div>
+  </div>
+
+  <!-- 詠唱タイムライン: 各コンポーネントの開始/終了をドラッグで制御 -->
+  <section class="panel" id="tlPanel" style="margin-top:28px;">
+    <h2>詠唱時系列 — 各層の発現タイミング</h2>
+    <div class="tl-toolbar">
+      <button class="btn" id="tlPlay">▶ 再生</button>
+      <button class="btn" id="tlEnd">⏭ 完成形へ</button>
+      <button class="btn" id="tlReset">⟲ 既定に戻す</button>
+      <button class="btn" id="sndToggle" title="効果音の切り替え">🔊 効果音</button>
+      <span class="tl-time" id="tlTime"></span>
+    </div>
+    <div class="tl-grid" id="tlGrid">
+      <div class="tl-row tl-ruler-row">
+        <span class="tl-label"></span>
+        <div class="tl-track tl-ruler" id="tlRuler" title="ドラッグで任意の瞬間をプレビュー"></div>
+        <span class="tl-val"></span>
+      </div>
+      <div id="tlRows"></div>
+      <div class="tl-playhead" id="tlPlayhead"></div>
+    </div>
+    <p class="tl-hint">バー本体のドラッグで移動、左右端のドラッグで開始/終了を調整。上のルーラーをドラッグすると任意の瞬間で停止して確認できます。</p>
+  </section>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+ * 1. 決定的乱数 — 同じ (術式, 階位, シード) は必ず同じ魔法陣
+ * ============================================================ */
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+/* ============================================================
+ * 2. 属性プロファイル — 意味論はここに集約
+ *    根拠: 錬金術の四大元素記号・数秘術・伝統的象徴
+ * ============================================================ */
+const ELEMENTS = {
+  fire: {
+    jp: "火", glyph: "△", sigil: "triUp",
+    hue: [0, 30], sat: 90,
+    // 火 = 3 の系譜（三角形の累乗）。階位で {3}→{6/2}→{9/2}→{9/4}
+    starStages: [{n:3,k:1},{n:6,k:2},{n:9,k:2},{n:9,k:4}],
+    rotation: { dir: 1, speed: 1.5 },      // 上昇する炎 → 時計回り・速
+    runes: "ᚲᚾᚦᛏᚹᛋ",
+    jitter: 0.022,                          // 炎は不安定 → 線が揺らぐ
+    invertStar: false,
+    reason: { shape:"上向き三角 — 錬金術における火の記号", num:"3の系譜 — 三角形の累乗", rot:"時計回り 1.5× — 上昇する炎" }
+  },
+  water: {
+    jp: "水", glyph: "▽", sigil: "triDown",
+    hue: [200, 222], sat: 80,
+    starStages: [{n:6,k:2},{n:6,k:2},{n:12,k:2},{n:12,k:5}],
+    rotation: { dir: -1, speed: 0.45 },     // 流れ → 反時計・緩
+    runes: "ᛚᛜᛇᛒᚢᛗ",
+    jitter: 0.004,                          // 水は滑らか
+    invertStar: false,
+    reason: { shape:"下向き三角 — 錬金術における水の記号", num:"6の系譜 — 六芒（二つの水の交差）", rot:"反時計回り 0.45× — 静かな流れ" }
+  },
+  wind: {
+    jp: "風", glyph: "🜁", sigil: "triUpBar",
+    hue: [105, 160], sat: 55,
+    starStages: [{n:4,k:1},{n:8,k:3},{n:8,k:3},{n:16,k:5}],
+    rotation: { dir: 1, speed: 2.2 },       // 渦 → 最速
+    runes: "ᚨᚱᛃᛖᚺᛞ",
+    jitter: 0.012,
+    invertStar: false,
+    reason: { shape:"上向き三角＋横線 — 錬金術における風の記号", num:"8の系譜 — 八方位の風", rot:"時計回り 2.2× — 渦巻く大気" }
+  },
+  earth: {
+    jp: "土", glyph: "🜃", sigil: "triDownBar",
+    hue: [30, 45], sat: 55,
+    starStages: [{n:4,k:1},{n:4,k:1},{n:8,k:2},{n:8,k:3}],
+    rotation: { dir: 1, speed: 0.12 },      // 大地 → ほぼ静止
+    runes: "ᛒᛖᚷᛜᛟᚢ",
+    jitter: 0,                              // 完全に安定
+    invertStar: false,
+    reason: { shape:"下向き三角＋横線 — 錬金術における土の記号", num:"4の系譜 — 四方の大地、安定の数", rot:"微動 0.12× — 動かざる大地" }
+  },
+  light: {
+    jp: "光", glyph: "☉", sigil: "sun",
+    hue: [44, 58], sat: 92,
+    starStages: [{n:6,k:1},{n:12,k:5},{n:12,k:5},{n:12,k:5}],
+    rotation: { dir: 1, speed: 0.8 },
+    runes: "ᛋᛞᛃᚹᛏᚨ",
+    jitter: 0,
+    invertStar: false,
+    reason: { shape:"円と点 — 太陽の記号、完全性", num:"12の系譜 — 黄道十二宮", rot:"時計回り 0.8× — 天球の運行" }
+  },
+  dark: {
+    jp: "闇", glyph: "☽", sigil: "moonstar",
+    hue: [268, 292], sat: 70,
+    starStages: [{n:5,k:2},{n:5,k:2},{n:10,k:3},{n:10,k:3}],
+    rotation: { dir: -1, speed: 0.8 },      // 反転の象徴 → 逆回転
+    runes: "ᛁᚺᚾᛉᚦᛟ",
+    jitter: 0.010,
+    invertStar: true,                        // 五芒星を逆位に
+    reason: { shape:"逆五芒星と月 — 反転の象徴", num:"5の系譜 — 逆位の五芒", rot:"反時計回り 0.8× — 逆行する月" }
+  },
+};
+const ROMAN = ["I","II","III","IV","V","VI","VII","VIII","IX","X"];
+const ALL_RUNES = Object.values(ELEMENTS).map(e => e.runes).join("");
+
+/* ============================================================
+ * 3. 詠唱シーケンス — 編集可能なタイムライン
+ *    各ステージは {s: 開始秒, e: 終了秒}。spin は開始点のみ。
+ *    レイヤー生成関数は TLX を読み、ステージ区間内に
+ *    各要素の遅延・所要時間を比例配分する。
+ * ============================================================ */
+function defaultTimeline() {
+  return {
+    spark:  { s: 0.0,  e: 1.7 },
+    sigil:  { s: 0.25, e: 2.25 },
+    rings:  { s: 1.7,  e: 2.9 },
+    runes:  { s: 2.9,  e: 4.4 },
+    star:   { s: 4.0,  e: 5.0 },
+    verts:  { s: 4.9,  e: 5.6 },
+    chords: { s: 5.1,  e: 6.1 },
+    burst:  { s: 5.9,  e: 7.0 },
+    spin:   { s: 6.4 },           // 回転開始（点イベント）
+  };
+}
+let TLX = defaultTimeline();
+function span(t) { return Math.max(0.1, t.e - t.s); }
+const LAYER_STAGGER = 0.55;   // 重奏時の層ごとの詠唱時間差（秒）
+function timelineTotal() {
+  let m = 4;
+  for (const k in TLX) m = Math.max(m, TLX[k].e ?? TLX[k].s + 0.6);
+  return Math.ceil((m + (state.layers - 1) * LAYER_STAGGER) * 10) / 10;
+}
+
+const STAGE_DEFS = [
+  { id: "spark",  label: "起動の火花" },
+  { id: "sigil",  label: "シジル 下絵→着色" },
+  { id: "rings",  label: "環の発現" },
+  { id: "runes",  label: "ルーン点灯" },
+  { id: "star",   label: "星型の刻印" },
+  { id: "verts",  label: "頂点装飾" },
+  { id: "chords", label: "内接弦の明滅" },
+  { id: "burst",  label: "完成の閃光" },
+  { id: "spin",   label: "回転開始", point: true },
+];
+
+const FX_CSS = `
+@keyframes spinCW{to{transform:rotate(360deg)}}
+@keyframes spinCCW{to{transform:rotate(-360deg)}}
+.spin{transform-origin:250px 250px}
+@keyframes fxDraw{to{stroke-dashoffset:0}}
+@keyframes fxFade{to{opacity:var(--o,1)}}
+@keyframes fxSketch{0%{stroke-dashoffset:1;stroke:#4b4960}55%{stroke-dashoffset:0;stroke:#4b4960}100%{stroke-dashoffset:0;stroke:var(--c)}}
+@keyframes fxFlicker{0%{opacity:0}25%{opacity:var(--o,1)}40%{opacity:.1}60%{opacity:var(--o,1)}78%{opacity:.25}100%{opacity:var(--o,1)}}
+@keyframes fxSpark{0%{opacity:0}12%{opacity:1}100%{opacity:0}}
+@keyframes fxBurst{0%{opacity:0}30%{opacity:.5}100%{opacity:0}}
+svg.cast .c-draw{stroke-dasharray:1;stroke-dashoffset:1;animation:fxDraw var(--dur,.8s) ease-out var(--d,0s) forwards}
+svg.cast .c-sketch{stroke-dasharray:1;animation:fxSketch var(--dur,2s) ease var(--d,0s) both}
+svg.cast .c-fade{opacity:0;animation:fxFade var(--dur,.6s) ease var(--d,0s) forwards}
+svg.cast .c-flicker{opacity:0;animation:fxFlicker var(--dur,.8s) linear var(--d,0s) forwards}
+svg.cast .c-spark{animation:fxSpark var(--dur,1.7s) ease var(--d,0s) both}
+svg.cast .c-burst{opacity:0;animation:fxBurst var(--dur,1.1s) ease var(--d,0s) both}
+@media (prefers-reduced-motion: reduce){
+  .spin{animation:none!important}
+  svg.cast .c-draw,svg.cast .c-sketch{animation:none!important;stroke-dasharray:none}
+  svg.cast .c-sketch{stroke:var(--c)}
+  svg.cast .c-fade,svg.cast .c-flicker{animation:none!important;opacity:var(--o,1)}
+  svg.cast .c-spark,svg.cast .c-burst{display:none!important}
+}`;
+{ const s = document.createElement("style"); s.textContent = FX_CSS; document.head.appendChild(s); }
+
+/* 詠唱用の演出属性を付与。クラスは常に付け、再生は svg.cast の有無で制御する。
+   LD は重奏の層遅延（generate が層ごとに設定し、CSS calc() を使わずJS側で加算） */
+let LD = 0;
+function castFx(el, cls, delay, vars = {}) {
+  el.setAttribute("class", cls);
+  let s = `--d:${(delay + LD).toFixed(2)}s`;
+  if (vars.o != null) s += `;--o:${vars.o}`;
+  if (vars.c) s += `;--c:${vars.c}`;
+  if (vars.dur) s += `;--dur:${vars.dur}s`;
+  const prev = el.getAttribute("style");
+  el.setAttribute("style", prev ? prev + ";" + s : s);
+}
+
+/* ============================================================
+ * 4. 幾何ユーティリティ
+ * ============================================================ */
+const NS = "http://www.w3.org/2000/svg";
+const C = 250, R_MAX = 235; // viewBox 500x500
+function svgEl(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function polar(r, deg) {
+  const a = (deg - 90) * Math.PI / 180;
+  return [C + r * Math.cos(a), C + r * Math.sin(a)];
+}
+// 正 n 角形の頂点列（jitter 付き）
+function vertices(r, n, offsetDeg, jitter, rng) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const jr = jitter ? r * (1 + (rng() - 0.5) * jitter * 2) : r;
+    pts.push(polar(jr, offsetDeg + 360 * i / n));
+  }
+  return pts;
+}
+function pathFromPoints(pts) {
+  return "M" + pts.map(p => p[0].toFixed(2) + " " + p[1].toFixed(2)).join("L") + "Z";
+}
+/* 線描画アニメーション(pathLength=1)対象の円・直線は <path> で描く。
+   WebKitは <circle>/<line> の pathLength 対応が遅く、効かないと陣が見えなくなるため */
+function circlePath(r) {
+  return `M ${C} ${C - r} A ${r} ${r} 0 1 1 ${(C - 0.01).toFixed(2)} ${C - r} Z`;
+}
+function linePath(x1, y1, x2, y2) {
+  return `M ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+}
+function gcd(a, b) { return b ? gcd(b, a % b) : a; }
+
+/* 星型多角形 {n/k}: gcd(n,k)>1 のとき複数の多角形に分解（例 {6/2}=六芒星） */
+function starPaths(r, n, k, offsetDeg, jitter, rng) {
+  const pts = vertices(r, n, offsetDeg, jitter, rng);
+  const g = gcd(n, k), paths = [];
+  for (let s = 0; s < g; s++) {
+    const seq = [];
+    let i = s;
+    do { seq.push(pts[i]); i = (i + k) % n; } while (i !== s);
+    paths.push(pathFromPoints(seq));
+  }
+  return { paths, pts };
+}
+
+/* ============================================================
+ * 5. レイヤー生成
+ * ============================================================ */
+function ringLayer(g, rings, power, col) {
+  const w = 0.8 + power * 0.12;
+  const tl = TLX.rings, sp = span(tl);
+  const dur = rings === 1 ? sp : Math.max(0.15, sp * 0.5);
+  const stag = rings > 1 ? (sp - dur) / (rings - 1) : 0;
+  for (let i = 0; i < rings; i++) {
+    const r = R_MAX - i * 9;
+    const c = svgEl("path", { d: circlePath(r), fill: "none", stroke: col, "stroke-width": i === 0 ? w * 1.6 : w * 0.7, pathLength: 1 }, g);
+    // 環は内側から外側へ順に発現（i=rings-1 が最内）。最後の環が区間終端ちょうどに描き終わる
+    castFx(c, "c-draw", tl.s + (rings - 1 - i) * stag, { dur });
+  }
+  // 最内環は破線（魔力の脈動）
+  const rIn = R_MAX - rings * 9 - 4;
+  const dashed = svgEl("circle", { cx: C, cy: C, r: rIn, fill: "none", stroke: col, "stroke-width": 0.6, "stroke-dasharray": "3 5", opacity: 0.7 }, g);
+  castFx(dashed, "c-fade", tl.s, { o: 0.7, dur: Math.min(0.6, sp) });
+  return rIn;
+}
+
+function runeLayer(g, runes, rng, col, r) {
+  const count = Math.max(12, Math.round(2 * Math.PI * r / 19)); // 円周長から文字数を導出
+  const tl = TLX.runes, sp = span(tl);
+  const dur = Math.min(0.6, sp * 0.4);
+  const wave = sp - dur;                       // 点灯波が走る幅。最後の文字が区間終端で灯り終わる
+  for (let i = 0; i < count; i++) {
+    const deg = 360 * i / count;
+    const [x, y] = polar(r, deg);
+    const tx = svgEl("text", {
+      x, y, fill: col, "font-size": 13, "text-anchor": "middle",
+      "dominant-baseline": "central",
+      transform: `rotate(${deg} ${x} ${y})`,
+      opacity: 0.9, "font-family": "serif",
+    }, g);
+    tx.textContent = runes[Math.floor(rng() * runes.length)];
+    castFx(tx, "c-fade", tl.s + (i / count) * wave, { o: 0.9, dur }); // 時計回りに点灯
+  }
+  return count;
+}
+
+function starLayer(g, star, invert, jitter, power, rng, col, r) {
+  const offset = invert ? 180 : 0;
+  const { paths, pts } = starPaths(r, star.n, star.k, offset, jitter, rng);
+  const w = 1.1 + power * 0.14;
+  const tS = TLX.star, spS = span(tS);
+  const pd = paths.length > 1 ? Math.max(0.2, spS * 0.7) : spS;
+  const stg = paths.length > 1 ? (spS - pd) / (paths.length - 1) : 0;
+  paths.forEach((d, idx) => {
+    const p = svgEl("path", { d, fill: "none", stroke: col, "stroke-width": w, "stroke-linejoin": "miter", pathLength: 1 }, g);
+    castFx(p, "c-draw", tS.s + idx * stg, { dur: pd }); // 一筆書きで刻印
+  });
+  // 頂点装飾: 小円 + 中心点（区間内を円周順に点灯）
+  const tV = TLX.verts, spV = span(tV);
+  const fd = Math.min(0.35, spV * 0.5);
+  pts.forEach(([x, y], i) => {
+    const o = svgEl("circle", { cx: x, cy: y, r: 5.5, fill: "none", stroke: col, "stroke-width": 0.9 }, g);
+    const d = svgEl("circle", { cx: x, cy: y, r: 1.6, fill: col }, g);
+    const base = tV.s + (i / pts.length) * (spV - fd);
+    castFx(o, "c-fade", base, { dur: fd });
+    castFx(d, "c-fade", base + fd * 0.4, { dur: fd });
+  });
+  return pts;
+}
+
+/* 内接幾何: 頂点間の弦を確率的に結線。密度は階位に比例 */
+function chordLayer(g, power, rng, col, pts) {
+  const n = pts.length;
+  if (n < 4) return 0;
+  const target = Math.min(power * 2, n * 2);
+  let guard = 0;
+  const used = new Set(), lines = [];
+  while (lines.length < target && guard++ < 200) {
+    const a = Math.floor(rng() * n);
+    const step = 2 + Math.floor(rng() * (n - 3));
+    const b = (a + step) % n;
+    const key = Math.min(a, b) + "-" + Math.max(a, b);
+    if (used.has(key) || a === b) continue;
+    used.add(key);
+    lines.push(svgEl("line", { x1: pts[a][0], y1: pts[a][1], x2: pts[b][0], y2: pts[b][1], stroke: col, "stroke-width": 0.55, opacity: 0.65 }, g));
+  }
+  // 実本数が確定してから区間内に均等配分（明滅しながら定着）
+  const tl = TLX.chords, sp = span(tl);
+  const fd = Math.min(0.8, sp * 0.5);
+  const stg = lines.length > 1 ? (sp - fd) / (lines.length - 1) : 0;
+  lines.forEach((ln, j) => castFx(ln, "c-flicker", tl.s + j * stg, { o: 0.65, dur: fd }));
+  return lines.length;
+}
+
+/* 中央シジル: 錬金術記号を SVG パスで直接描画（フォント非依存）
+   sketch（線描画）対象の円・直線は circlePath/linePath で <path> 化する */
+const SIGILS = {
+  triUp(g, col, r, w) {
+    svgEl("path", { d: pathFromPoints(vertices(r, 3, 0, 0, null)), fill: "none", stroke: col, "stroke-width": w }, g);
+  },
+  triDown(g, col, r, w) {
+    svgEl("path", { d: pathFromPoints(vertices(r, 3, 60, 0, null)), fill: "none", stroke: col, "stroke-width": w }, g);
+  },
+  triUpBar(g, col, r, w) {
+    SIGILS.triUp(g, col, r, w);
+    svgEl("path", { d: linePath(C - r * 0.78, C + r * 0.18, C + r * 0.78, C + r * 0.18), fill: "none", stroke: col, "stroke-width": w }, g);
+  },
+  triDownBar(g, col, r, w) {
+    SIGILS.triDown(g, col, r, w);
+    svgEl("path", { d: linePath(C - r * 0.78, C - r * 0.18, C + r * 0.78, C - r * 0.18), fill: "none", stroke: col, "stroke-width": w }, g);
+  },
+  sun(g, col, r, w) {
+    svgEl("path", { d: circlePath(r * 0.8), fill: "none", stroke: col, "stroke-width": w }, g);
+    svgEl("circle", { cx: C, cy: C, r: 4, fill: col }, g);
+    for (let i = 0; i < 12; i++) {
+      const [x1, y1] = polar(r * 0.8, i * 30), [x2, y2] = polar(r * 0.95, i * 30);
+      svgEl("path", { d: linePath(x1, y1, x2, y2), fill: "none", stroke: col, "stroke-width": 1.2 }, g);
+    }
+  },
+  moonstar(g, col, r, w) {
+    const { paths } = starPaths(r * 0.9, 5, 2, 180, 0, null);
+    svgEl("path", { d: paths[0], fill: "none", stroke: col, "stroke-width": w }, g);
+    svgEl("path", {
+      d: `M ${C+r*0.32} ${C-r*0.3} A ${r*0.42} ${r*0.42} 0 1 0 ${C+r*0.32} ${C+r*0.3} A ${r*0.3} ${r*0.3} 0 1 1 ${C+r*0.32} ${C-r*0.3} Z`,
+      fill: col, opacity: 0.85 }, g);
+  },
+};
+
+/* ============================================================
+ * 6. 正規化プロファイル — 属性術式と自作術式を同じ形に揃える
+ *    generate() はこの norm だけを見る
+ * ============================================================ */
+/* 属性の音色: 波形と基音も意味論に紐づける
+   火=鋸歯波(倍音豊富・燃焼) 水=正弦波(滑らか) 風=三角波(軽い) 土=矩形波(低く重い)
+   光=正弦波の鐘(高い基音) 闇=鋸歯波の低音 */
+const TONES = {
+  fire:  { wave: "sawtooth", base: 220 },
+  water: { wave: "sine",     base: 174 },
+  wind:  { wave: "triangle", base: 294 },
+  earth: { wave: "square",   base: 110 },
+  light: { wave: "sine",     base: 392 },
+  dark:  { wave: "sawtooth", base: 131 },
+};
+const SIGIL_WAVE = { triUp: "sawtooth", triDown: "sine", triUpBar: "triangle", triDownBar: "square", sun: "sine", moonstar: "sawtooth" };
+
+function presetProfile(key, power) {
+  const p = ELEMENTS[key];
+  return {
+    id: "preset:" + key,
+    hueMin: p.hue[0], hueMax: p.hue[1], sat: p.sat,
+    star: p.starStages[Math.min(3, Math.floor((power - 1) / 3))],
+    rings: 1 + Math.floor(power / 3),         // 属性術式では階位から導出
+    dir: p.rotation.dir, speed: p.rotation.speed,
+    runes: p.runes, jitter: p.jitter,
+    invertStar: p.invertStar, sigil: p.sigil,
+    tone: TONES[key],
+    label: `${p.jp}属性`, reason: p.reason,
+  };
+}
+function customProfile(c) {
+  return {
+    id: "custom:" + JSON.stringify(c),         // 全パラメータがシードに混入 → 決定性を維持
+    hueMin: c.hue, hueMax: c.hue, sat: c.sat,
+    star: { n: c.n, k: c.k },
+    rings: c.rings,
+    dir: c.dir, speed: c.speed,
+    runes: c.runes === "all" ? ALL_RUNES : ELEMENTS[c.runes].runes,
+    jitter: c.jitter,
+    invertStar: c.invert, sigil: c.sigil,
+    // 自作術式: 色相→基音（110〜220Hz）、シジル→波形
+    tone: { wave: SIGIL_WAVE[c.sigil] || "sine", base: 110 * Math.pow(2, (c.hue % 360) / 360) },
+    label: "自作術式", reason: null,
+  };
+}
+
+/* ============================================================
+ * 7. 合成パイプライン
+ *    split=true : 「外環+ルーン」「星型+弦」「シジル」を別SVGに分け、
+ *                 回転はSVG外（CSSラッパー）で行う。SVG内容が静的になるため
+ *                 グローのフィルタ結果がキャッシュされ、回転はGPU合成だけで済む。
+ *                 （フィルタ内部で図形が回転し続けると毎フレーム再計算され、
+ *                  複数層×3D合成で固まる — その対策）
+ *    split=false: 従来通り回転グループを内包する単一SVG。書き出し用。
+ * ============================================================ */
+function generate(norm, power, seedStr, cast = false, layerDelay = 0, uid = "L0", split = false) {
+  const rng = mulberry32(hashStr(norm.id + "|" + power + "|" + seedStr));
+  LD = layerDelay;   // 重奏の層遅延: castFx が各要素の --d に加算する
+
+  const hue = norm.hueMin + rng() * (norm.hueMax - norm.hueMin);
+  const col    = `hsl(${hue.toFixed(0)} ${norm.sat}% 66%)`;
+  const colDim = `hsl(${hue.toFixed(0)} ${Math.max(0, norm.sat - 20)}% 52%)`;
+
+  /* SVGを作る。グローはフィルタではなくストローク下敷き（addGlowUnderlay）で表現する。
+     feGaussianBlur は回転・3D合成のたびに再計算され、モバイル環境では固まるため不使用 */
+  const mkSvg = () => {
+    const s = svgEl("svg", { viewBox: "0 0 500 500", xmlns: NS, role: "img",
+      "aria-label": `${norm.label}・階位${ROMAN[power-1]}の魔法陣` });
+    if (cast) s.setAttribute("class", "cast");
+    const defs = svgEl("defs", {}, s);
+    const root = svgEl("g", {}, s);
+    return { s, root, defs };
+  };
+
+  const spinDelay = cast ? TLX.spin.s + layerDelay : 0;  // 回転は「回転開始」点＋層遅延から
+  const anim = (mult, flip) => {
+    if (norm.speed <= 0.01) return "";           // 速度 0 = 静止
+    const d = norm.dir * (flip ? -1 : 1);
+    const dur = (46 / (norm.speed * mult)).toFixed(1);
+    return `animation:${d > 0 ? "spinCW" : "spinCCW"} ${dur}s linear ${spinDelay}s infinite`;
+  };
+
+  /* 役割ごとのSVG（または単一SVG内のグループ）を用意 */
+  let outer, star, core;
+  if (split) {
+    outer = mkSvg(); star = mkSvg(); core = mkSvg();
+  } else {
+    const one = mkSvg();
+    outer = { s: one.s, root: svgEl("g", { class: "spin", style: anim(1, false) }, one.root), defs: one.defs };
+    star  = { s: one.s, root: svgEl("g", { class: "spin", style: anim(0.5, true) }, one.root), defs: one.defs };
+    core  = { s: one.s, root: svgEl("g", {}, one.root), defs: one.defs };
+  }
+
+  // L1+L2: 外周環 + ルーン環（同方向に回転）
+  const rInner = ringLayer(outer.root, norm.rings, power, col);   // 最内（破線）環の半径
+  const runeCount = runeLayer(outer.root, norm.runes, rng, colDim, rInner - 11);
+
+  // L3+L4+L5: 星型 + 頂点装飾 + 内接弦（逆方向・半速）
+  const starR = rInner - 26;
+  const pts = starLayer(star.root, norm.star, norm.invertStar, norm.jitter, power, rng, col, starR);
+  const chords = chordLayer(star.root, power, rng, colDim, pts);
+  const guide = svgEl("circle", { cx: C, cy: C, r: starR, fill: "none", stroke: colDim, "stroke-width": 0.5, opacity: 0.5 }, star.root);
+  castFx(guide, "c-fade", TLX.star.s, { o: 0.5, dur: 0.5 });
+
+  // L6: 中央シジル（静止 — 術式の核は不動）
+  const gSigil = svgEl("g", {}, core.root);
+  svgEl("path", { d: circlePath(52), fill: "none", stroke: col, "stroke-width": 1.4 }, gSigil);
+  (SIGILS[norm.sigil] || SIGILS.sun)(gSigil, col, 38, 2.2);
+
+  // シジルは「灰色の下絵 → 線描画 → 属性色に着色」(fxSketch)。塗りつぶし要素はフェードで遅れて灯る
+  const tG = TLX.sigil, spG = span(tG);
+  Array.from(gSigil.children).forEach((ch, idx) => {
+    const fill = ch.getAttribute("fill");
+    if (fill === null || fill === "none") {
+      ch.setAttribute("pathLength", "1");
+      castFx(ch, "c-sketch", tG.s + idx * Math.min(0.1, spG * 0.05), { c: col, dur: spG * 0.9 });
+    } else {
+      castFx(ch, "c-fade", tG.s + spG * 0.55 + idx * 0.05, { o: ch.getAttribute("opacity") || 1, dur: Math.min(0.6, spG * 0.4) });
+    }
+  });
+
+  if (cast) {
+    // 起動の火花（中心に一瞬灯る）
+    const spark = svgEl("circle", { cx: C, cy: C, r: 2.4, fill: col }, core.root);
+    castFx(spark, "c-spark", TLX.spark.s, { dur: span(TLX.spark) });
+    // 完成の閃光（最前面）
+    const grad = svgEl("radialGradient", { id: `burstG-${uid}` }, core.defs);
+    svgEl("stop", { offset: "0%", "stop-color": "#ffffff", "stop-opacity": 0.9 }, grad);
+    svgEl("stop", { offset: "30%", "stop-color": col, "stop-opacity": 0.5 }, grad);
+    svgEl("stop", { offset: "80%", "stop-color": col, "stop-opacity": 0 }, grad);
+    const burst = svgEl("circle", { cx: C, cy: C, r: 245, fill: `url(#burstG-${uid})` }, core.s);
+    castFx(burst, "c-burst", TLX.burst.s, { dur: span(TLX.burst) });
+  }
+
+  // グロー: 各ストローク要素の下に「太く半透明な複製」を敷く（階位 → 光輪の太さ）
+  addGlowUnderlay(outer.root, power);
+  addGlowUnderlay(star.root, power);
+  addGlowUnderlay(core.root, power);
+
+  return {
+    svg: outer.s,                                   // split=false ではこれが完成形の単一SVG
+    parts: split ? { outer: outer.s, star: star.s, core: core.s } : null,
+    spin: { outer: anim(1, false), star: anim(0.5, true) },  // splitではCSSラッパー用
+    hue, runeCount, chords,
+  };
+}
+
+/* フィルタ不使用のグロー。クローンは元要素のクラス・--d を継承するため
+   詠唱アニメーションでも本体と完全に同期して現れる */
+function addGlowUnderlay(root, power) {
+  const wide = 3 + power * 0.5;
+  const glow = svgEl("g", { opacity: (0.2 + power * 0.014).toFixed(2) });
+  for (const el of root.querySelectorAll("circle, path, line")) {
+    const stroke = el.getAttribute("stroke");
+    if (!stroke || stroke === "none") continue;
+    if (el.classList.contains("c-spark") || el.classList.contains("c-burst")) continue;
+    const c = el.cloneNode(false);
+    const w = parseFloat(el.getAttribute("stroke-width") || 1);
+    c.setAttribute("stroke-width", (w + wide).toFixed(2));
+    c.setAttribute("stroke-linecap", "round");
+    c.setAttribute("fill", "none");
+    glow.appendChild(c);
+  }
+  root.insertBefore(glow, root.firstChild);
+}
+
+/* ============================================================
+ * 8. UI 結線
+ * ============================================================ */
+const state = {
+  mode: "preset",
+  element: "fire",
+  power: 5,
+  seed: "1024",
+  layers: 2,        // 重奏: 同時に展開する魔法陣の数（1〜3）
+  gap: 70,          // 層間隔（px, translateZ）
+  custom: {
+    hue: 200, sat: 80, rings: 2, n: 7, k: 3,
+    dir: 1, speed: 1, jitter: 0.01, invert: false,
+    sigil: "sun", runes: "light",
+  },
+};
+const $ = id => document.getElementById(id);
+const frame = $("frame"), legend = $("legend"), legendTitle = $("legendTitle");
+const frameHint = frame.querySelector(".frame-hint");
+const manipBtn = frame.querySelector(".frame-mode-btn");
+
+/* --- 属性ボタン --- */
+for (const key in ELEMENTS) {
+  const p = ELEMENTS[key];
+  const midHue = (p.hue[0] + p.hue[1]) / 2;
+  const b = document.createElement("button");
+  b.className = "el-btn";
+  b.style.setProperty("--btn-c", `hsl(${midHue} ${p.sat}% 62%)`);
+  b.dataset.key = key;
+  b.innerHTML = `<span class="glyph">${p.glyph}</span><span>${p.jp}</span>`;
+  b.addEventListener("click", () => { state.element = key; render(); });
+  $("elements").appendChild(b);
+}
+
+/* --- モード切替 --- */
+function setMode(mode) {
+  state.mode = mode;
+  const isCustom = mode === "custom";
+  $("tabPreset").classList.toggle("active", !isCustom);
+  $("tabCustom").classList.toggle("active", isCustom);
+  $("tabPreset").setAttribute("aria-selected", String(!isCustom));
+  $("tabCustom").setAttribute("aria-selected", String(isCustom));
+  $("presetPane").classList.toggle("hidden", isCustom);
+  $("customPane").classList.toggle("hidden", !isCustom);
+  render();
+}
+$("tabPreset").addEventListener("click", () => setMode("preset"));
+$("tabCustom").addEventListener("click", () => setMode("custom"));
+
+/* --- 自作モードのコントロール --- */
+function kMax(n) { return Math.max(1, Math.floor(n / 2)); }
+
+function syncCustomUI() {
+  const c = state.custom;
+  $("cHue").value = c.hue;       $("cHueOut").textContent = c.hue + "°";
+  $("cHueOut").style.color = `hsl(${c.hue} ${c.sat}% 62%)`;
+  $("cSat").value = c.sat;       $("cSatOut").textContent = c.sat + "%";
+  $("cRings").value = c.rings;   $("cRingsOut").textContent = c.rings;
+  $("cN").value = c.n;           $("cNOut").textContent = c.n;
+  $("cK").max = kMax(c.n);
+  $("cK").value = c.k;           $("cKOut").textContent = c.k;
+  $("cSpeed").value = c.speed;   $("cSpeedOut").textContent = c.speed.toFixed(2) + "×";
+  $("cJitter").value = c.jitter; $("cJitterOut").textContent = c.jitter.toFixed(3);
+  $("cDirCW").classList.toggle("active", c.dir === 1);
+  $("cDirCCW").classList.toggle("active", c.dir === -1);
+  $("cInvert").checked = c.invert;
+  $("cSigil").value = c.sigil;
+  $("cRunes").value = c.runes;
+}
+
+function bindCustom(id, key, parse) {
+  $(id).addEventListener("input", () => {
+    state.custom[key] = parse($(id).value);
+    if (key === "n") state.custom.k = Math.min(state.custom.k, kMax(state.custom.n)); // k を n に追従してクランプ
+    syncCustomUI();
+    render();
+  });
+}
+bindCustom("cHue", "hue", v => +v);
+bindCustom("cSat", "sat", v => +v);
+bindCustom("cRings", "rings", v => +v);
+bindCustom("cN", "n", v => +v);
+bindCustom("cK", "k", v => +v);
+bindCustom("cSpeed", "speed", v => +v);
+bindCustom("cJitter", "jitter", v => +v);
+$("cDirCW").addEventListener("click", () => { state.custom.dir = 1; syncCustomUI(); render(); });
+$("cDirCCW").addEventListener("click", () => { state.custom.dir = -1; syncCustomUI(); render(); });
+$("cInvert").addEventListener("change", () => { state.custom.invert = $("cInvert").checked; render(); });
+$("cSigil").addEventListener("change", () => { state.custom.sigil = $("cSigil").value; render(); });
+$("cRunes").addEventListener("change", () => { state.custom.runes = $("cRunes").value; render(); });
+
+/* 選択中の属性術式を自作モードの出発点として複写 */
+$("copyPreset").addEventListener("click", () => {
+  const p = presetProfile(state.element, state.power);
+  const src = ELEMENTS[state.element];
+  state.custom = {
+    hue: Math.round((p.hueMin + p.hueMax) / 2),
+    sat: p.sat,
+    rings: p.rings,
+    n: p.star.n, k: p.star.k,
+    dir: p.dir, speed: p.speed,
+    jitter: p.jitter, invert: p.invertStar,
+    sigil: p.sigil,
+    runes: state.element,
+  };
+  syncCustomUI();
+  render();
+});
+
+/* --- 共通コントロール --- */
+$("power").addEventListener("input", () => { state.power = +$("power").value; render(); });
+$("seed").addEventListener("change", () => { state.seed = $("seed").value.trim() || "0"; render(); });
+$("reroll").addEventListener("click", () => {
+  state.seed = String(Math.floor(Math.random() * 99999));
+  $("seed").value = state.seed;
+  playCast();     // 新しい術式番号 = 新しい詠唱
+});
+$("castBtn").addEventListener("click", () => playCast());
+
+/* --- 3D オービット操作 ---
+   通常: 横ドラッグで回転、縦スワイプはページスクロール（touch-action: pan-y）
+   操作モード: touch-action: none で縦スクロールを止め、
+               1本指ドラッグで自由回転（rx/ry）、2本指ピンチで拡縮 */
+let manipMode = false;
+manipBtn.addEventListener("click", () => {
+  manipMode = !manipMode;
+  frame.classList.toggle("manip", manipMode);
+  manipBtn.classList.toggle("on", manipMode);
+  manipBtn.setAttribute("aria-pressed", String(manipMode));
+  manipBtn.textContent = manipMode ? "✥ 操作中 — タップで解除" : "✥ 操作モード";
+  frameHint.textContent = manipMode
+    ? "ドラッグで自由回転 / ピンチで拡縮（縦スクロールは止まっています）"
+    : "横ドラッグで回転 — 操作モードで自由回転・ピンチ拡縮";
+});
+
+const pointers = new Map();   // マルチタッチ追跡
+let pinchDist = 0;
+frame.addEventListener("pointerdown", e => {
+  if (e.target.closest(".frame-mode-btn")) return;   // ボタン操作はドラッグにしない
+  frame.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+  }
+});
+frame.addEventListener("pointermove", e => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  if (pointers.size >= 2) {                          // ピンチ拡縮
+    p.x = e.clientX; p.y = e.clientY;
+    const [a, b] = [...pointers.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchDist > 0 && d > 0) {
+      orbitS.zoom = Math.min(1.8, Math.max(0.45, orbitS.zoom * d / pinchDist));
+      applyOrbit();
+    }
+    pinchDist = d;
+    return;
+  }
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  orbitS.ry += dx * 0.35;
+  if (e.pointerType === "mouse" || manipMode) {      // 縦回転はマウスまたは操作モード時
+    orbitS.rx = Math.min(89, Math.max(-89, orbitS.rx + dy * 0.35));
+  }
+  p.x = e.clientX; p.y = e.clientY;
+  applyOrbit();
+});
+const endPointer = e => { pointers.delete(e.pointerId); pinchDist = 0; };
+frame.addEventListener("pointerup", endPointer);
+frame.addEventListener("pointercancel", endPointer);
+
+frame.addEventListener("wheel", e => {
+  e.preventDefault();
+  orbitS.zoom = Math.min(1.8, Math.max(0.45, orbitS.zoom * (e.deltaY < 0 ? 1.08 : 0.92)));
+  applyOrbit();
+}, { passive: false });
+frame.addEventListener("dblclick", () => {       // ダブルクリックで視点リセット
+  orbitS.rx = -58; orbitS.ry = -16; orbitS.zoom = 0.95;
+  applyOrbit();
+});
+
+/* --- 重奏 --- */
+$("layersN").addEventListener("input", () => {
+  state.layers = +$("layersN").value;
+  $("layersOut").textContent = state.layers;
+  render();
+  updateTimelineUI();   // 全長に層の時間差が含まれるため
+});
+$("gapN").addEventListener("input", () => {
+  state.gap = +$("gapN").value;
+  $("gapOut").textContent = state.gap;
+  applyOrbit();   // 再生成せず変換だけ更新（詠唱中でも途切れない）
+});
+
+$("download").addEventListener("click", () => {
+  if (!lastNorm) return;
+  // 表示は分割SVGだが、書き出しは従来構造の単一SVGを再生成（決定的なので同一の陣になる）
+  const out = generate(lastNorm, state.power, state.seed, true, 0, "EXP", false);
+  const clone = out.svg;
+  clone.setAttribute("class", "cast");   // 書き出したSVGは開くたびに詠唱が再生される
+  const style = document.createElementNS(NS, "style");
+  style.textContent = FX_CSS;            // ページと同一定義を埋め込み
+  clone.insertBefore(style, clone.firstChild);
+  clone.setAttribute("style", "background:#0b0a12");
+  const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml" });
+  const a = document.createElement("a");
+  const tag = state.mode === "preset" ? state.element : "custom";
+  a.href = URL.createObjectURL(blob);
+  a.download = `magic-circle_${tag}_p${state.power}_s${state.seed}.svg`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+/* --- 描画 --- */
+const DIR_JP = d => d > 0 ? "時計回り" : "反時計回り";
+const LAYER_SCALES = [1, 0.74, 0.52];   // 重奏時の各層のサイズ比
+
+/* 3D オービット状態（再描画をまたいで保持） */
+const orbitS = { rx: -58, ry: -16, zoom: 0.95 };
+let orbitEl = null;
+
+function applyOrbit() {
+  if (!orbitEl) return;
+  // 各層に同一ビュー行列＋層固有のtranslateZを適用（preserve-3d不使用のWebKit安全構成）
+  Array.from(orbitEl.children).forEach((lay, i) => {
+    lay.style.transform =
+      `translate(-50%, -50%) perspective(1100px) scale(${orbitS.zoom}) ` +
+      `rotateX(${orbitS.rx}deg) rotateY(${orbitS.ry}deg) translateZ(${i * state.gap}px)`;
+  });
+}
+
+/* cast=true で詠唱シーケンス付き生成。スライダー操作などの再描画は即時完成形 */
+let lastNorm = null;
+function render(cast = false) {
+  clearTimeout(castTimer);   // 旧詠唱のクリーンアップを無効化（呼び出し時には初期化済み）
+  const norm = state.mode === "preset"
+    ? presetProfile(state.element, state.power)
+    : customProfile(state.custom);
+  lastNorm = norm;
+
+  // 3Dシーン: perspective > orbit > 層（translateZ で積層）
+  const scene = document.createElement("div");
+  scene.className = "scene3d";
+  orbitEl = document.createElement("div");
+  orbitEl.className = "orbit";
+  scene.appendChild(orbitEl);
+
+  let first = null;
+  for (let i = 0; i < state.layers; i++) {
+    // 層ごとに派生シード → 同じ術式の「写し」が細部だけ違う形で重なる
+    const seed = i === 0 ? state.seed : state.seed + "#" + i;
+    const ld = cast ? i * LAYER_STAGGER : 0;        // 時間差詠唱
+    const out = generate(norm, state.power, seed, cast, ld, "L" + i, true);  // split=true
+    if (i === 0) first = out;
+
+    const lay = document.createElement("div");
+    lay.className = "layer3d";
+    const sz = LAYER_SCALES[i] * 100;
+    lay.style.width = sz + "%";
+    // transform は applyOrbit() が一括設定する
+
+    // 外環+ルーンと星型+弦は別ラッパーで逆方向に回転、シジルは静止
+    const wrapO = document.createElement("div");
+    wrapO.className = "spinwrap"; wrapO.style.cssText = out.spin.outer;
+    wrapO.appendChild(out.parts.outer);
+    const wrapS = document.createElement("div");
+    wrapS.className = "spinwrap"; wrapS.style.cssText = out.spin.star;
+    wrapS.appendChild(out.parts.star);
+    lay.append(wrapO, wrapS, out.parts.core);
+    orbitEl.appendChild(lay);
+  }
+  frame.replaceChildren(scene, frameHint, manipBtn);
+  applyOrbit();
+
+  const { hue, runeCount, chords } = first;
+  document.documentElement.style.setProperty("--hue", hue.toFixed(0));
+  $("powerOut").textContent = ROMAN[state.power - 1];
+  document.querySelectorAll(".el-btn").forEach(b => b.classList.toggle("active", b.dataset.key === state.element));
+
+  if (norm.reason) {
+    legendTitle.textContent = "詠唱注解 — 導出根拠";
+    legend.innerHTML = `
+      <dt>Hue</dt><dd>${hue.toFixed(0)}° <small>${norm.label}の色相帯 ${norm.hueMin}–${norm.hueMax}° から決定的に選択</small></dd>
+      <dt>Sigil</dt><dd>${norm.reason.shape}</dd>
+      <dt>Star</dt><dd>星型多角形 {${norm.star.n}/${norm.star.k}} <small>${norm.reason.num} — 階位${ROMAN[state.power-1]}に対応</small></dd>
+      <dt>Spin</dt><dd>${norm.reason.rot}</dd>
+      <dt>Rings</dt><dd>${norm.rings}重環・ルーン${runeCount}字・内接弦${chords}本 <small>環数 = 1 + ⌊階位 / 3⌋、弦密度は階位に比例</small></dd>`;
+  } else {
+    legendTitle.textContent = "詠唱注解 — 自作術式";
+    const c = state.custom;
+    legend.innerHTML = `
+      <dt>Hue</dt><dd>${c.hue}° / 彩度 ${c.sat}% <small>詠唱者の意志により設定</small></dd>
+      <dt>Star</dt><dd>星型多角形 {${c.n}/${c.k}}${c.invert ? "（逆位）" : ""} <small>gcd(${c.n}, ${c.k}) = ${gcd(c.n, c.k)} → ${gcd(c.n, c.k)}個の多角形に分解</small></dd>
+      <dt>Spin</dt><dd>${DIR_JP(c.dir)} ${c.speed.toFixed(2)}×${c.speed <= 0.01 ? "（静止）" : ""}</dd>
+      <dt>Rings</dt><dd>${c.rings}重環・ルーン${runeCount}字・内接弦${chords}本 <small>弦密度・線幅・発光は階位${ROMAN[state.power-1]}に比例</small></dd>
+      <dt>Form</dt><dd>シジル: ${$("cSigil").selectedOptions[0].textContent} / 文字系: ${$("cRunes").selectedOptions[0].textContent}</dd>`;
+  }
+}
+
+/* ============================================================
+ * 9. 詠唱タイムライン UI
+ *    バー: ドラッグで移動、左右端で開始/終了を調整
+ *    ルーラー: ドラッグスクラブで任意の瞬間を静止プレビュー
+ *    （SMIL は svg.setCurrentTime、CSS は Web Animations API で同期停止）
+ * ============================================================ */
+let playheadT = 0, rafId = null, playT0 = null;
+const fmt = v => v.toFixed(2);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+const tlRows = $("tlRows"), tlRuler = $("tlRuler"), tlGrid = $("tlGrid"), tlPlayhead = $("tlPlayhead");
+const rowRefs = {};
+let dragTotal = null;   // ドラッグ中はスケールを固定してジッタを防ぐ
+
+function buildTimelineUI() {
+  tlRows.innerHTML = "";
+  for (const def of STAGE_DEFS) {
+    const row = document.createElement("div"); row.className = "tl-row";
+    const lab = document.createElement("span"); lab.className = "tl-label"; lab.textContent = def.label;
+    const track = document.createElement("div"); track.className = "tl-track";
+    const val = document.createElement("span"); val.className = "tl-val";
+    row.append(lab, track, val);
+    tlRows.appendChild(row);
+
+    let bar;
+    if (def.point) {
+      bar = document.createElement("div"); bar.className = "tl-point";
+      bar.title = def.label;
+      track.appendChild(bar);
+      attachDrag(bar, () => ({ s0: TLX[def.id].s }), (ctx, dt) => {
+        TLX[def.id].s = clamp(ctx.s0 + dt, 0, 30);
+      });
+    } else {
+      bar = document.createElement("div"); bar.className = "tl-bar";
+      const hl = document.createElement("div"); hl.className = "tl-handle l";
+      const hr = document.createElement("div"); hr.className = "tl-handle r";
+      bar.append(hl, hr);
+      track.appendChild(bar);
+      const st = () => ({ s0: TLX[def.id].s, e0: TLX[def.id].e });
+      attachDrag(bar, st, (ctx, dt) => {           // 本体: 長さを保って移動
+        const w = ctx.e0 - ctx.s0;
+        const ns = clamp(ctx.s0 + dt, 0, 30 - w);
+        TLX[def.id].s = ns; TLX[def.id].e = ns + w;
+      });
+      attachDrag(hl, st, (ctx, dt) => { TLX[def.id].s = clamp(ctx.s0 + dt, 0, ctx.e0 - 0.1); });
+      attachDrag(hr, st, (ctx, dt) => { TLX[def.id].e = clamp(ctx.e0 + dt, ctx.s0 + 0.1, 30); });
+    }
+    rowRefs[def.id] = { bar, val };
+  }
+  updateTimelineUI();
+}
+
+function attachDrag(el, start, move) {
+  el.addEventListener("pointerdown", e => {
+    e.preventDefault(); e.stopPropagation();
+    el.setPointerCapture(e.pointerId);
+    stopPlayLoop();
+    const ctx = start();
+    dragTotal = timelineTotal();
+    const track = el.closest(".tl-track");
+    const pxPerSec = track.getBoundingClientRect().width / dragTotal;
+    const x0 = e.clientX;
+    const onMove = ev => { move(ctx, (ev.clientX - x0) / pxPerSec); updateTimelineUI(); };
+    const onUp = () => {
+      el.removeEventListener("pointermove", onMove);
+      dragTotal = null;
+      updateTimelineUI();
+      renderAt(playheadT);    // 編集結果を現在のプレビュー時刻で即反映
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp, { once: true });
+  });
+}
+
+function updateTimelineUI() {
+  const total = dragTotal ?? timelineTotal();
+  // ルーラー目盛（1秒刻み）
+  tlRuler.innerHTML = "";
+  for (let s = 0; s <= Math.floor(total); s++) {
+    const tick = document.createElement("div");
+    tick.className = "tl-tick";
+    tick.style.left = (s / total * 100) + "%";
+    if (s < total) tick.innerHTML = `<span>${s}s</span>`;
+    tlRuler.appendChild(tick);
+  }
+  for (const def of STAGE_DEFS) {
+    const t = TLX[def.id], ref = rowRefs[def.id];
+    if (!ref) continue;
+    if (def.point) {
+      ref.bar.style.left = (t.s / total * 100) + "%";
+      ref.val.textContent = fmt(t.s) + "s →";
+    } else {
+      ref.bar.style.left = (t.s / total * 100) + "%";
+      ref.bar.style.width = (Math.max(0.05, t.e - t.s) / total * 100) + "%";
+      ref.val.textContent = `${fmt(t.s)}–${fmt(t.e)}s`;
+    }
+  }
+  drawPlayhead(total);
+  $("tlTime").textContent = `${fmt(playheadT)}s / ${fmt(total)}s`;
+}
+
+function drawPlayhead(total = timelineTotal()) {
+  const trackRect = tlRuler.getBoundingClientRect();
+  const gridRect = tlGrid.getBoundingClientRect();
+  tlPlayhead.style.left =
+    (trackRect.left - gridRect.left + clamp(playheadT / total, 0, 1) * trackRect.width) + "px";
+}
+window.addEventListener("resize", () => drawPlayhead());
+
+/* 再生中の毎フレーム更新用: バー・目盛りは再構築せずプレイヘッドだけ動かす */
+function updatePlayhead() {
+  const total = timelineTotal();
+  drawPlayhead(total);
+  $("tlTime").textContent = `${fmt(playheadT)}s / ${fmt(total)}s`;
+}
+
+/* 任意の瞬間 t で全層・全アニメーションを同期停止 */
+function seek(t) {
+  playheadT = t;
+  killAudio();   // 静止プレビュー中は無音
+  for (const svg of frame.querySelectorAll("svg")) {
+    try { svg.pauseAnimations?.(); svg.setCurrentTime?.(t); }   // SMIL（グロー立ち上がり）
+    catch (err) {}
+  }
+  try {
+    // CSS（描画・点灯・回転ラッパーdiv含む）— frame配下を一括で同時刻に停止
+    for (const a of frame.getAnimations({ subtree: true })) {
+      a.pause();
+      a.currentTime = t * 1000;
+    }
+  } catch (err) { /* 非対応環境では静止プレビューなしで続行 */ }
+  updatePlayhead();
+}
+
+/* 再生成して時刻 t で静止（タイムライン編集の反映用） */
+function renderAt(t) {
+  stopPlayLoop();
+  render(true);
+  // スタイル適用とアニメーション登録を待ってからシーク
+  requestAnimationFrame(() => requestAnimationFrame(() => seek(t)));
+}
+
+/* 詠唱を最初から再生し、プレイヘッドを追従させる */
+let castTimer = null;
+function playCast() {
+  stopPlayLoop();
+  render(true);
+  scheduleCastAudio(lastNorm);   // 効果音をタイムラインに同期してスケジュール
+  playheadT = 0;
+  playT0 = performance.now();
+  const loop = () => {
+    const total = timelineTotal();
+    playheadT = (performance.now() - playT0) / 1000;
+    if (playheadT >= total) { playheadT = total; updatePlayhead(); rafId = null; return; }
+    updatePlayhead();
+    rafId = requestAnimationFrame(loop);
+  };
+  rafId = requestAnimationFrame(loop);
+  // 詠唱完了後は cast クラスと一時演出を外し、終了済みアニメーションの維持コストをゼロにする
+  clearTimeout(castTimer);
+  castTimer = setTimeout(() => {
+    frame.querySelectorAll("svg.cast").forEach(s => s.classList.remove("cast"));
+    frame.querySelectorAll(".c-spark, .c-burst").forEach(n => n.remove());
+  }, (timelineTotal() + 0.6) * 1000);
+}
+function stopPlayLoop() { if (rafId) { cancelAnimationFrame(rafId); rafId = null; } }
+
+/* ルーラーのドラッグスクラブ */
+tlRuler.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  tlRuler.setPointerCapture(e.pointerId);
+  stopPlayLoop();
+  if (!frame.querySelector("svg.cast")) render(true);   // 静止プレビューには詠唱属性が必要
+  const rect = tlRuler.getBoundingClientRect();
+  const toT = x => clamp((x - rect.left) / rect.width, 0, 1) * timelineTotal();
+  const apply = ev => seek(toT(ev.clientX));
+  requestAnimationFrame(() => apply(e));
+  const onMove = ev => apply(ev);
+  tlRuler.addEventListener("pointermove", onMove);
+  tlRuler.addEventListener("pointerup", () => tlRuler.removeEventListener("pointermove", onMove), { once: true });
+});
+
+$("tlPlay").addEventListener("click", playCast);
+$("tlEnd").addEventListener("click", () => {
+  stopPlayLoop();
+  killAudio();
+  playheadT = timelineTotal();
+  render(false);            // 完成形を即時表示
+  updateTimelineUI();
+});
+$("tlReset").addEventListener("click", () => {
+  TLX = defaultTimeline();
+  buildTimelineUI();
+  playCast();
+});
+
+/* ============================================================
+ * 10. 効果音 — Web Audio によるリアルタイム合成（音源ファイル不要）
+ *     属性の音色は TONES（自作術式は 色相→基音 / シジル→波形）。
+ *     各ステージの音は TLX に同期してスケジュールされ、
+ *     タイムラインを編集すれば音のタイミングも追従する。
+ * ============================================================ */
+let actx = null, master = null, castBus = null, audioOn = true, noiseBuf = null;
+
+function initAudio() {
+  if (actx) return;
+  try {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    master = actx.createGain();
+    master.gain.value = 0.5;
+    master.connect(actx.destination);
+  } catch (e) { audioOn = false; }
+}
+// 自動再生制限への対応: 最初のユーザー操作でコンテキストを起動
+document.addEventListener("pointerdown", () => {
+  initAudio();
+  if (actx && actx.state === "suspended") actx.resume();
+}, true);
+const audioReady = () => audioOn && actx && actx.state === "running";
+
+function killAudio() {
+  if (castBus) { try { castBus.disconnect(); } catch (e) {} castBus = null; }
+}
+function newBus() {
+  killAudio();
+  castBus = actx.createGain();
+  castBus.connect(master);
+  return castBus;
+}
+function getNoise() {
+  if (!noiseBuf) {
+    noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  return noiseBuf;
+}
+function envGain(t, a, peak, end) {
+  const g = actx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(peak, t + a);
+  g.gain.exponentialRampToValueAtTime(0.0001, end);
+  return g;
+}
+/* 純音/波形音: f0→f1 グライド対応 */
+function sfxTone(bus, { wave = "sine", f0, f1, t, dur, peak = 0.1, a = 0.02 }) {
+  const o = actx.createOscillator();
+  o.type = wave;
+  o.frequency.setValueAtTime(f0, t);
+  if (f1) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  const g = envGain(t, a, peak, t + dur);
+  o.connect(g); g.connect(bus);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+/* ノイズ + フィルタ: 風切り・擦過・轟音 */
+function sfxWhoosh(bus, { t, dur, f0, f1, q = 1.5, peak = 0.1, type = "bandpass", a }) {
+  const src = actx.createBufferSource();
+  src.buffer = getNoise(); src.loop = true;
+  const flt = actx.createBiquadFilter();
+  flt.type = type; flt.Q.value = q;
+  flt.frequency.setValueAtTime(f0, t);
+  if (f1) flt.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  const g = envGain(t, a ?? dur * 0.4, peak, t + dur);
+  src.connect(flt); flt.connect(g); g.connect(bus);
+  src.start(t); src.stop(t + dur + 0.05);
+}
+/* 鐘: 非整数倍音の重ね合わせ */
+function sfxBell(bus, { t, f, dur = 1.2, peak = 0.1 }) {
+  for (const [m, p] of [[1, 1], [2.76, 0.4], [5.4, 0.18]]) {
+    sfxTone(bus, { wave: "sine", f0: f * m, t, dur: dur / (1 + m * 0.3), peak: peak * p, a: 0.005 });
+  }
+}
+
+function scheduleCastAudio(norm) {
+  if (!audioOn || !norm) return;
+  initAudio();
+  if (!audioReady()) return;      // 初回ロードなどジェスチャ前は静かに進行
+  const bus = newBus();
+  const t0 = actx.currentTime + 0.08;
+  // 重奏: 層ごとに時間差を付け、奥の層ほど小さく響かせる
+  for (let i = 0; i < state.layers; i++) {
+    const layerGain = actx.createGain();
+    layerGain.gain.value = Math.pow(0.55, i);
+    layerGain.connect(bus);
+    scheduleOneCast(layerGain, norm, t0 + i * LAYER_STAGGER);
+  }
+}
+
+function scheduleOneCast(bus, norm, t0) {
+  const base = norm.tone.base, wave = norm.tone.wave;
+  const PENTA = [1, 1.125, 1.25, 1.5, 1.667];   // ペンタトニック比率（不協和を避ける）
+
+  // 起動の火花: 高音のピング
+  sfxTone(bus, { wave: "sine", f0: 1400, f1: 2600, t: t0 + TLX.spark.s, dur: 0.35, peak: 0.14, a: 0.004 });
+
+  // シジル: 下絵の擦過音 → 着色の瞬間に鐘
+  { const tl = TLX.sigil, sp = span(tl);
+    sfxWhoosh(bus, { t: t0 + tl.s, dur: sp * 0.55, f0: 1600, f1: 2400, q: 3, peak: 0.05 });
+    sfxBell(bus, { t: t0 + tl.s + sp * 0.55, f: base * 2, peak: 0.12 });
+  }
+  // 環: 1本ごとの上昇ウーシュ（描画と同じ配分式で同期）
+  { const tl = TLX.rings, sp = span(tl), n = norm.rings;
+    const dur = n === 1 ? sp : Math.max(0.15, sp * 0.5);
+    const stg = n > 1 ? (sp - dur) / (n - 1) : 0;
+    for (let i = 0; i < n; i++) {
+      sfxWhoosh(bus, { t: t0 + tl.s + i * stg, dur, f0: 350, f1: 1400, q: 2, peak: 0.07 });
+      sfxTone(bus, { wave, f0: base, f1: base * 1.5, t: t0 + tl.s + i * stg, dur, peak: 0.04 });
+    }
+  }
+  // ルーン: ペンタトニックの煌めき（点灯波に沿って高音が走る）
+  { const tl = TLX.runes, sp = span(tl), M = 14;
+    for (let j = 0; j < M; j++) {
+      sfxTone(bus, { wave: "sine", f0: base * 4 * PENTA[j % PENTA.length],
+        t: t0 + tl.s + (j / M) * Math.max(0.1, sp - 0.2), dur: 0.22, peak: 0.035, a: 0.003 });
+    }
+  }
+  // 星型: 一筆書きのグリッサンド（{n/k} の分解数だけ重なる）
+  { const tl = TLX.star, sp = span(tl);
+    const paths = gcd(norm.star.n, norm.star.k);
+    const pd = paths > 1 ? Math.max(0.2, sp * 0.7) : sp;
+    const stg = paths > 1 ? (sp - pd) / (paths - 1) : 0;
+    for (let i = 0; i < paths; i++) {
+      sfxTone(bus, { wave, f0: base * 1.5, f1: base * 2.25, t: t0 + tl.s + i * stg, dur: pd, peak: 0.06, a: pd * 0.3 });
+    }
+  }
+  // 内接弦: 低く短い明滅音
+  { const tl = TLX.chords, sp = span(tl), K = 8;
+    for (let j = 0; j < K; j++) {
+      sfxTone(bus, { wave: "square", f0: base * 2 * PENTA[(j * 2) % PENTA.length],
+        t: t0 + tl.s + (j / K) * Math.max(0.1, sp - 0.1), dur: 0.07, peak: 0.022, a: 0.003 });
+    }
+  }
+  // 完成の閃光: 轟き + 低音の沈み込み + 高域の飛沫
+  { const t = t0 + TLX.burst.s;
+    sfxWhoosh(bus, { t, dur: 1.1, f0: 2800, f1: 130, q: 0.8, peak: 0.22, type: "lowpass", a: 0.01 });
+    sfxTone(bus, { wave: "sine", f0: base / 2, f1: base / 4, t, dur: 1.3, peak: 0.18, a: 0.01 });
+    sfxWhoosh(bus, { t, dur: 0.35, f0: 5000, q: 0.7, peak: 0.09, type: "highpass", a: 0.005 });
+  }
+  // 回転開始: 稼働の唸り（基音 + 完全五度がゆっくり立ち上がって消える）
+  { const t = t0 + TLX.spin.s;
+    sfxTone(bus, { wave, f0: base, t, dur: 4.5, peak: 0.05, a: 1.2 });
+    sfxTone(bus, { wave: "sine", f0: base * 1.5, t, dur: 4.5, peak: 0.03, a: 1.5 });
+  }
+}
+
+$("sndToggle").addEventListener("click", () => {
+  audioOn = !audioOn;
+  if (!audioOn) killAudio();
+  $("sndToggle").textContent = audioOn ? "🔊 効果音" : "🔇 効果音";
+});
+
+/* ============================================================
+ * 11. パーマリンク — 術式をURLで共有
+ *     例: ?e=fire&p=7&s=1024&l=3&g=90
+ *         ?m=c&h=200&st=80&r=2&n=7&k=3&d=1&sp=1&j=0.01&inv=0&si=sun&ru=light&p=5&s=42
+ * ============================================================ */
+const clampN = (v, a, b, def) => Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : def;
+
+function loadStateFromURL() {
+  const q = new URLSearchParams(location.search);
+  if (![...q.keys()].length) return;
+  const num = k => parseFloat(q.get(k));
+  if (q.get("m") === "c") {
+    state.mode = "custom";
+    const c = state.custom;
+    c.hue    = clampN(num("h"), 0, 359, c.hue);
+    c.sat    = clampN(num("st"), 20, 100, c.sat);
+    c.rings  = clampN(Math.round(num("r")), 1, 4, c.rings);
+    c.n      = clampN(Math.round(num("n")), 3, 16, c.n);
+    c.k      = clampN(Math.round(num("k")), 1, kMax(c.n), c.k);
+    c.dir    = q.get("d") === "-1" ? -1 : 1;
+    c.speed  = clampN(num("sp"), 0, 3, c.speed);
+    c.jitter = clampN(num("j"), 0, 0.05, c.jitter);
+    c.invert = q.get("inv") === "1";
+    if (SIGILS[q.get("si")]) c.sigil = q.get("si");
+    if (q.get("ru") === "all" || ELEMENTS[q.get("ru")]) c.runes = q.get("ru");
+  } else if (ELEMENTS[q.get("e")]) {
+    state.element = q.get("e");
+  }
+  state.power  = clampN(Math.round(num("p")), 1, 10, state.power);
+  if (q.get("s")) state.seed = q.get("s").slice(0, 32);
+  state.layers = clampN(Math.round(num("l")), 1, 3, state.layers);
+  state.gap    = clampN(Math.round(num("g")), 20, 160, state.gap);
+}
+
+function stateToQuery() {
+  const q = new URLSearchParams();
+  if (state.mode === "custom") {
+    const c = state.custom;
+    q.set("m", "c");
+    q.set("h", c.hue); q.set("st", c.sat); q.set("r", c.rings);
+    q.set("n", c.n); q.set("k", c.k); q.set("d", c.dir);
+    q.set("sp", c.speed); q.set("j", c.jitter);
+    q.set("inv", c.invert ? "1" : "0");
+    q.set("si", c.sigil); q.set("ru", c.runes);
+  } else {
+    q.set("e", state.element);
+  }
+  q.set("p", state.power); q.set("s", state.seed);
+  q.set("l", state.layers); q.set("g", state.gap);
+  return q.toString();
+}
+
+$("shareBtn").addEventListener("click", async () => {
+  const query = "?" + stateToQuery();
+  const url = location.origin + location.pathname + query;
+  history.replaceState(null, "", query);   // アドレスバーも現在の術式に同期
+  const btn = $("shareBtn"), orig = "🔗 共有リンクをコピー";
+  try {
+    await navigator.clipboard.writeText(url);
+    btn.textContent = "✓ コピーしました";
+  } catch (e) {
+    window.prompt("このURLをコピーしてください", url);   // clipboard不可環境のフォールバック
+    btn.textContent = orig;
+    return;
+  }
+  setTimeout(() => { btn.textContent = orig; }, 1600);
+});
+
+/* --- 初期化: URL → state → UI → 詠唱 --- */
+loadStateFromURL();
+$("power").value = state.power;
+$("seed").value = state.seed;
+$("layersN").value = state.layers; $("layersOut").textContent = state.layers;
+$("gapN").value = state.gap;       $("gapOut").textContent = state.gap;
+syncCustomUI();
+if (state.mode === "custom") setMode("custom");
+buildTimelineUI();
+playCast();   // 初回ロードは詠唱から始まる
+</script>
+</body>
+</html>
