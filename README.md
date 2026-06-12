@@ -2,7 +2,7 @@
 
 属性・階位・シードから魔法陣を決定的に生成するジェネレーター。単一HTMLで動作し、ビルド不要・依存ライブラリなし（Google Fontsのみ）。
 
-**Demo**: https://Vaduz.github.io/magic-circle/
+**Demo**: https://vaduz.github.io/magic-circle/
 
 ## 特徴
 
