@@ -1624,8 +1624,17 @@ $("sndToggle").addEventListener("click", () => {
  * 11. パーマリンク — 術式をURLで共有
  *     例: ?e=fire&p=7&s=1024&l=3&g=90
  *         ?m=c&h=200&st=80&r=2&n=7&k=3&d=1&sp=1&j=0.01&inv=0&si=sun&ru=light&p=5&s=42
+ *     tl= は編集済みの詠唱時系列（STAGE_DEFS 順の秒数リスト、既定のままなら省略）
  * ============================================================ */
 const clampN = (v, a, b, def) => Number.isFinite(v) ? Math.min(b, Math.max(a, v)) : def;
+
+/* タイムラインを STAGE_DEFS 順の秒数リストに直列化（点イベントは開始のみ） */
+function timelineToQuery(tl = TLX) {
+  return STAGE_DEFS
+    .flatMap(d => d.point ? [tl[d.id].s] : [tl[d.id].s, tl[d.id].e])
+    .map(v => Math.round(v * 100) / 100)
+    .join(",");
+}
 
 function loadStateFromURL() {
   const q = new URLSearchParams(location.search);
@@ -1652,6 +1661,15 @@ function loadStateFromURL() {
   if (q.get("s")) state.seed = q.get("s").slice(0, 32);
   state.layers = clampN(Math.round(num("l")), 1, 3, state.layers);
   state.gap    = clampN(Math.round(num("g")), 20, 160, state.gap);
+  if (q.get("tl")) {
+    const v = q.get("tl").split(",").map(parseFloat);
+    let i = 0;
+    for (const d of STAGE_DEFS) {
+      const t = TLX[d.id];
+      t.s = clampN(v[i++], 0, 30, t.s);
+      if (!d.point) t.e = clampN(v[i++], t.s + 0.1, 30, t.e);
+    }
+  }
 }
 
 function stateToQuery() {
@@ -1669,6 +1687,8 @@ function stateToQuery() {
   }
   q.set("p", state.power); q.set("s", state.seed);
   q.set("l", state.layers); q.set("g", state.gap);
+  const tl = timelineToQuery();
+  if (tl !== timelineToQuery(defaultTimeline())) q.set("tl", tl);   // 既定から編集された時のみ付与
   return q.toString();
 }
 

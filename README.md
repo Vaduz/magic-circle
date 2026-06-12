@@ -33,6 +33,7 @@ open index.html   # ブラウザで開くだけ
 ```
 ?e=fire&p=7&s=1024&l=3&g=90          # 属性術式: 火・階位VII・3層重奏
 ?m=c&h=120&n=9&k=4&si=moonstar&p=6   # 自作術式: 全パラメータをURLで指定
+?e=water&tl=0,2,0.3,2.5,...          # tl= 編集した詠唱時系列（既定のままなら省略）
 ```
 
 # LICENSE
