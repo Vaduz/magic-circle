@@ -2,7 +2,7 @@
 
 属性・階位・シードから魔法陣を決定的に生成するジェネレーター。単一HTMLで動作し、ビルド不要・依存ライブラリなし（Google Fontsのみ）。
 
-**Demo**: https://<your-username>.github.io/magic-circle/
+**Demo**: https://Vaduz.github.io/magic-circle/
 
 ## 特徴
 
@@ -34,7 +34,3 @@ open index.html   # ブラウザで開くだけ
 ?e=fire&p=7&s=1024&l=3&g=90          # 属性術式: 火・階位VII・3層重奏
 ?m=c&h=120&n=9&k=4&si=moonstar&p=6   # 自作術式: 全パラメータをURLで指定
 ```
-
-## 公開前のTODO
-
-- `index.html` 内の `YOUR-USERNAME`（OGPタグ2箇所）を自分のGitHubユーザー名に置き換える
