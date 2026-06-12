@@ -34,3 +34,7 @@ open index.html   # ブラウザで開くだけ
 ?e=fire&p=7&s=1024&l=3&g=90          # 属性術式: 火・階位VII・3層重奏
 ?m=c&h=120&n=9&k=4&si=moonstar&p=6   # 自作術式: 全パラメータをURLで指定
 ```
+
+# LICENSE
+
+Vaduz/magic-circle © 2026 by Satoru Yoshihara is licensed under CC BY 4.0
